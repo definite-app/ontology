@@ -14,13 +14,16 @@
 #include <duckdb/parser/statement/select_statement.hpp>
 #include <duckdb/parser/query_node/select_node.hpp>
 #include <duckdb/parser/tableref/basetableref.hpp>
+#ifdef HAVE_NLOHMANN_JSON
 #include <nlohmann/json.hpp>
+#endif
 
 // OpenSSL linked through vcpkg
 #include <openssl/opensslv.h>
 
 namespace duckdb {
 
+#ifdef HAVE_NLOHMANN_JSON
 using json = nlohmann::json;
 
 // Dataset Registry Implementation
@@ -399,6 +402,8 @@ static void SemanticQueryFunction(ClientContext &context, TableFunctionInput &da
 	}
 }
 
+#endif // HAVE_NLOHMANN_JSON
+
 // Scalar Functions (existing)
 inline void QuackScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &name_vector = args.data[0];
@@ -475,6 +480,7 @@ inline void RegisterDatasetScalarFun(DataChunk &args, ExpressionState &state, Ve
 }
 
 void RegisterSemanticQueryFunctions(DatabaseInstance &instance) {
+#ifdef HAVE_NLOHMANN_JSON
 	// Register the table function
 	TableFunction semantic_query_func("SEMANTIC_QUERY", {LogicalType::VARCHAR}, SemanticQueryFunction,
 	                                  SemanticQueryBind);
@@ -485,6 +491,10 @@ void RegisterSemanticQueryFunctions(DatabaseInstance &instance) {
 	auto register_dataset_function = ScalarFunction("REGISTER_DATASET", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                                LogicalType::VARCHAR, RegisterDatasetScalarFun);
 	ExtensionUtil::RegisterFunction(instance, register_dataset_function);
+#else
+	// Semantic query functionality is disabled - nlohmann_json not available
+	(void)instance; // Suppress unused parameter warning
+#endif
 }
 
 static void LoadInternal(DatabaseInstance &instance) {
