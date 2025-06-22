@@ -1,0 +1,174 @@
+# name: test/sql/semantic_query.test
+# description: test semantic query extension functionality
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT * FROM SEMANTIC_QUERY('{}');
+----
+Catalog Error: Table Function with name semantic_query does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require quack
+
+# Test 1: Dataset Registration
+query I
+SELECT REGISTER_DATASET('orders_ds', 
+    '[{"name": "orders_ds.total_revenue", "sql_expression": "SUM(order_amount)", "aggregation_type": "sum"}, {"name": "orders_ds.order_count", "sql_expression": "COUNT(*)", "aggregation_type": "count"}]',
+    '[{"name": "orders_ds.order_date", "sql_expression": "order_date"}, {"name": "orders_ds.customer_id", "sql_expression": "customer_id"}]'
+);
+----
+Dataset 'orders_ds' registered successfully
+
+# Test 2: Basic Semantic Query with snake_case JSON - measures only
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"]
+}');
+
+# Test 3: Semantic Query with dimensions and measures
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue", "orders_ds.order_count"],
+  "dimensions": ["orders_ds.customer_id"]
+}');
+
+# Test 4: Semantic Query with time_dimensions using snake_case
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"],
+  "time_dimensions": [{"dimension": "orders_ds.order_date", "granularity": "day", "date_range": ["2025-01-01", "2025-01-31"]}]
+}');
+
+# Test 5: Semantic Query with filters
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"],
+  "dimensions": ["orders_ds.customer_id"],
+  "filters": [{"dimension": "orders_ds.customer_id", "operator": "equals", "values": ["123", "456"]}]
+}');
+
+# Test 6: Semantic Query with order and limit
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"],
+  "dimensions": ["orders_ds.customer_id"],
+  "order": [{"id": "orders_ds.total_revenue", "desc": true}],
+  "limit": 10
+}');
+
+# Test 7: Complex query with all features
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue", "orders_ds.order_count"],
+  "dimensions": ["orders_ds.customer_id"],
+  "time_dimensions": [{"dimension": "orders_ds.order_date", "granularity": "month", "date_range": ["2025-01-01", "2025-12-31"]}],
+  "filters": [{"dimension": "orders_ds.customer_id", "operator": "not_equals", "values": ["999"]}],
+  "order": [{"id": "orders_ds.order_date", "desc": false}, {"id": "orders_ds.total_revenue", "desc": true}],
+  "limit": 100,
+  "time_zone": "UTC"
+}');
+
+# Test 8: EXPLAIN functionality - should return compiled SQL
+query I
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"],
+  "dimensions": ["orders_ds.customer_id"]
+}', true);
+----
+SELECT SUM(order_amount) AS orders_ds.total_revenue, customer_id AS orders_ds.customer_id FROM orders_ds GROUP BY orders_ds.customer_id
+
+# Test 9: Error cases - Invalid dataset
+statement error
+SELECT * FROM SEMANTIC_QUERY('{"dataset": "nonexistent_ds", "measures": ["some_measure"]}');
+----
+Invalid Input Error: Semantic query validation failed: Dataset 'nonexistent_ds' not found in registry
+
+# Test 10: Error cases - Invalid measure
+statement error
+SELECT * FROM SEMANTIC_QUERY('{"dataset": "orders_ds", "measures": ["invalid_measure"]}');
+----
+Invalid Input Error: Semantic query validation failed: Measure 'invalid_measure' not found in dataset 'orders_ds'
+
+# Test 11: Error cases - Invalid dimension
+statement error
+SELECT * FROM SEMANTIC_QUERY('{"dataset": "orders_ds", "dimensions": ["invalid_dimension"]}');
+----
+Invalid Input Error: Semantic query validation failed: Dimension 'invalid_dimension' not found in dataset 'orders_ds'
+
+# Test 12: Error cases - Invalid time dimension
+statement error
+SELECT * FROM SEMANTIC_QUERY('{"dataset": "orders_ds", "time_dimensions": [{"dimension": "invalid_time_dim", "granularity": "day"}]}');
+----
+Invalid Input Error: Semantic query validation failed: Time dimension 'invalid_time_dim' not found in dataset 'orders_ds'
+
+# Test 13: Error cases - Invalid JSON
+statement error
+SELECT * FROM SEMANTIC_QUERY('invalid json');
+----
+Invalid Input Error: Invalid JSON in semantic query
+
+# Test 14: Different granularities for time dimensions
+query I
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"],
+  "time_dimensions": [{"dimension": "orders_ds.order_date", "granularity": "year"}]
+}', true);
+----
+SELECT SUM(order_amount) AS orders_ds.total_revenue, DATE_TRUNC('year', order_date) AS orders_ds.order_date FROM orders_ds GROUP BY orders_ds.order_date
+
+# Test 15: Test different filter operators
+query I
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "orders_ds",
+  "measures": ["orders_ds.total_revenue"],
+  "filters": [{"dimension": "orders_ds.customer_id", "operator": "not_equals", "values": ["999"]}]
+}', true);
+----
+SELECT SUM(order_amount) AS orders_ds.total_revenue FROM orders_ds WHERE orders_ds.customer_id != '999'
+
+# Test 16: Register additional dataset for advanced testing
+query I
+SELECT REGISTER_DATASET('sales_ds',
+    '[{"name": "sales_ds.revenue", "sql_expression": "SUM(sales_amount)", "aggregation_type": "sum"}, {"name": "sales_ds.avg_sale", "sql_expression": "AVG(sales_amount)", "aggregation_type": "avg"}]',
+    '[{"name": "sales_ds.sale_date", "sql_expression": "sale_date"}, {"name": "sales_ds.product_id", "sql_expression": "product_id"}, {"name": "sales_ds.region", "sql_expression": "region"}]'
+);
+----
+Dataset 'sales_ds' registered successfully
+
+# Test 17: Multiple datasets can coexist
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "sales_ds",
+  "measures": ["sales_ds.revenue", "sales_ds.avg_sale"],
+  "dimensions": ["sales_ds.region", "sales_ds.product_id"]
+}');
+
+# Test 18: Test time zone field (should be parsed correctly)
+statement ok
+SELECT * FROM SEMANTIC_QUERY('{
+  "dataset": "sales_ds",
+  "measures": ["sales_ds.revenue"],
+  "time_dimensions": [{"dimension": "sales_ds.sale_date", "granularity": "day"}],
+  "time_zone": "America/New_York"
+}');
+
+# Test 19: Empty measures and dimensions should fail validation
+statement error
+SELECT * FROM SEMANTIC_QUERY('{"dataset": "orders_ds"}');
+----
+Invalid Input Error: No valid measures or dimensions specified
+
+# Test 20: Test original quack functions still work
+query I
+SELECT quack('Semantic');
+----
+Quack Semantic 🐥
