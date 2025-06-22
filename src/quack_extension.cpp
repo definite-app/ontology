@@ -329,8 +329,9 @@ struct SemanticQueryData : public TableFunctionData {
     string query_json;
     string compiled_sql;
     bool explained;
+    bool finished;
     
-    SemanticQueryData(string json, bool explain = false) : query_json(json), explained(explain) {
+    SemanticQueryData(string json, bool explain = false) : query_json(json), explained(explain), finished(false) {
         auto semantic_query = ParseSemanticQuery(json);
         string error_msg;
         if (!DatasetRegistry::GetInstance().ValidateQuery(semantic_query, error_msg)) {
@@ -363,11 +364,10 @@ static unique_ptr<FunctionData> SemanticQueryBind(ClientContext &context, TableF
         return_types = {LogicalType::VARCHAR};
         names = {"compiled_sql"};
     } else {
-        // For normal mode, we need to determine the schema from the query
-        // This is a simplified version - in practice you'd parse the compiled SQL
-        // or maintain schema information in the registry
+        // For normal mode, return a simplified schema
+        // In production, this would be dynamically determined from the query
         return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::DATE};
-        names = {"dimension", "measure", "date"};
+        names = {"result", "count", "date"};
     }
     
     return std::move(data);
@@ -376,14 +376,25 @@ static unique_ptr<FunctionData> SemanticQueryBind(ClientContext &context, TableF
 static void SemanticQueryFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
     auto &data = (SemanticQueryData &)*data_p.bind_data;
     
+    // If already finished, return empty chunk
+    if (data.finished) {
+        output.SetCardinality(0);
+        return;
+    }
+    
     if (data.explained) {
-        // Return the compiled SQL
+        // Return the compiled SQL for explain mode
         output.SetCardinality(1);
         output.SetValue(0, 0, Value(data.compiled_sql));
+        data.finished = true;
     } else {
-        // For now, return empty result set
-        // In a full implementation, you would execute the compiled SQL here
-        output.SetCardinality(0);
+        // For normal mode, return a placeholder result showing the compiled SQL
+        // In a production implementation, this would execute the SQL and return actual data
+        output.SetCardinality(1);
+        output.SetValue(0, 0, Value("Compiled SQL: " + data.compiled_sql));
+        output.SetValue(1, 0, Value::BIGINT(1));
+        output.SetValue(2, 0, Value::DATE(Date::FromString("2025-01-01")));
+        data.finished = true;
     }
 }
 
